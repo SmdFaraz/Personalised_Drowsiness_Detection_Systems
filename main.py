@@ -1,14 +1,22 @@
 import cv2
 import mediapipe as mp
+import pygame
 from eye_utils import eye_aspect_ratio
 from mouth_utils import mouth_aspect_ratio
 
+# -------- INIT --------
 mp_face_mesh = mp.solutions.face_mesh
 
 face_mesh = mp_face_mesh.FaceMesh(
     max_num_faces=1,
     refine_landmarks=True
 )
+
+# Initialize pygame mixer
+pygame.mixer.init()
+pygame.mixer.music.load("assets/alarm.wav")
+
+# ----------------------
 
 # Eye landmarks
 LEFT_EYE = [33,160,158,133,153,144]
@@ -76,88 +84,66 @@ try:
                     mouth.append((x,y))
                     cv2.circle(frame,(x,y),2,(255,0,0),-1)
 
-                # Calculate EAR
+                # EAR
                 leftEAR = eye_aspect_ratio(left_eye)
                 rightEAR = eye_aspect_ratio(right_eye)
                 ear = (leftEAR + rightEAR) / 2.0
 
-                # Calculate MAR
+                # MAR
                 mar = mouth_aspect_ratio(mouth)
 
-                # ----- BLINK & DROWSY DETECTION -----
+                # ----- BLINK -----
                 if ear < EAR_THRESHOLD:
-
                     blink_counter += 1
 
                     if blink_counter >= DROWSY_FRAMES:
                         status = "DROWSY"
 
                 else:
-
                     if blink_counter >= CONSEC_FRAMES:
                         total_blinks += 1
-
                     blink_counter = 0
 
-                # ----- YAWN DETECTION -----
+                # ----- YAWN -----
                 if mar > YAWN_THRESHOLD:
-
                     yawn_counter += 1
 
                     if yawn_counter >= YAWN_FRAMES:
                         total_yawns += 1
                         status = "DROWSY"
                         yawn_counter = 0
-
                 else:
                     yawn_counter = 0
 
                 # Display EAR
-                cv2.putText(frame,
-                            f"EAR: {ear:.2f}",
-                            (30,50),
-                            cv2.FONT_HERSHEY_SIMPLEX,
-                            1,
-                            (0,255,0),
-                            2)
+                cv2.putText(frame, f"EAR: {ear:.2f}", (30,50),
+                            cv2.FONT_HERSHEY_SIMPLEX, 1, (0,255,0), 2)
 
                 # Display MAR
-                cv2.putText(frame,
-                            f"MAR: {mar:.2f}",
-                            (30,100),
-                            cv2.FONT_HERSHEY_SIMPLEX,
-                            1,
-                            (255,0,0),
-                            2)
+                cv2.putText(frame, f"MAR: {mar:.2f}", (30,100),
+                            cv2.FONT_HERSHEY_SIMPLEX, 1, (255,0,0), 2)
 
-                # Display blink count
-                cv2.putText(frame,
-                            f"Blinks: {total_blinks}",
-                            (30,150),
-                            cv2.FONT_HERSHEY_SIMPLEX,
-                            1,
-                            (0,255,0),
-                            2)
+                # Blinks
+                cv2.putText(frame, f"Blinks: {total_blinks}", (30,150),
+                            cv2.FONT_HERSHEY_SIMPLEX, 1, (0,255,0), 2)
 
-                # Display yawn count
-                cv2.putText(frame,
-                            f"Yawns: {total_yawns}",
-                            (30,200),
-                            cv2.FONT_HERSHEY_SIMPLEX,
-                            1,
-                            (255,0,0),
-                            2)
+                # Yawns
+                cv2.putText(frame, f"Yawns: {total_yawns}", (30,200),
+                            cv2.FONT_HERSHEY_SIMPLEX, 1, (255,0,0), 2)
 
-                # Status display
+                # Status
                 color = (0,0,255) if status=="DROWSY" else (0,255,0)
 
-                cv2.putText(frame,
-                            f"Status: {status}",
-                            (30,250),
-                            cv2.FONT_HERSHEY_SIMPLEX,
-                            1,
-                            color,
-                            3)
+                cv2.putText(frame, f"Status: {status}", (30,250),
+                            cv2.FONT_HERSHEY_SIMPLEX, 1, color, 3)
+
+        # -------- ALARM CONTROL --------
+        if status == "DROWSY":
+            if not pygame.mixer.music.get_busy():
+                pygame.mixer.music.play(-1)  # loop
+        else:
+            pygame.mixer.music.stop()
+        # --------------------------------
 
         cv2.imshow("Driver Monitoring System", frame)
 
@@ -168,5 +154,6 @@ except KeyboardInterrupt:
     print("Program stopped by user")
 
 finally:
+    pygame.mixer.music.stop()
     cap.release()
     cv2.destroyAllWindows()
