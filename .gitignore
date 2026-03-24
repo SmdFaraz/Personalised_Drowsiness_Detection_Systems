@@ -1,8 +1,11 @@
 venv/
 __pycache__/
 *.pyc
-*.pkl
 *.h5
 *.pt
 *.log
 .DS_Store
+
+# Ignore all pickle files EXCEPT face database
+*.pkl
+!driver_db/encodings.pkl
