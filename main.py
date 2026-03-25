@@ -1,10 +1,21 @@
 import cv2
 import mediapipe as mp
 import pygame
+import time
+import numpy as np
+
 from eye_utils import eye_aspect_ratio
 from mouth_utils import mouth_aspect_ratio
 
-# -------- INIT --------
+from ui.dashboard import (
+    draw_header,
+    draw_status_panel,
+    draw_waiting,
+    draw_calibration
+)
+
+# ------------------ INIT ------------------
+
 mp_face_mesh = mp.solutions.face_mesh
 
 face_mesh = mp_face_mesh.FaceMesh(
@@ -12,34 +23,44 @@ face_mesh = mp_face_mesh.FaceMesh(
     refine_landmarks=True
 )
 
-# Initialize pygame mixer
 pygame.mixer.init()
 pygame.mixer.music.load("assets/alarm.wav")
 
-# ----------------------
+cap = cv2.VideoCapture(0)
 
-# Eye landmarks
+# Create resizable window
+cv2.namedWindow("Driver Monitoring System", cv2.WINDOW_NORMAL)
+
+# Fullscreen toggle state
+fullscreen = False
+
+# Landmarks
 LEFT_EYE = [33,160,158,133,153,144]
 RIGHT_EYE = [362,385,387,263,373,380]
-
-# Mouth landmarks
 MOUTH = [78,81,13,311,308,402,14,178]
 
-# Thresholds
+# Thresholds (will be calibrated)
 EAR_THRESHOLD = 0.25
+MAR_THRESHOLD = 0.50
+
+# Detection params
 CONSEC_FRAMES = 3
 DROWSY_FRAMES = 20
-
-YAWN_THRESHOLD = 0.50
 YAWN_FRAMES = 15
 
 blink_counter = 0
-total_blinks = 0
-
 yawn_counter = 0
-total_yawns = 0
 
-cap = cv2.VideoCapture(0)
+# Calibration state
+calibrating = False
+calibrated = False
+calibration_start = 0
+CALIB_DURATION = 5
+
+ear_values = []
+mar_values = []
+
+# -------------------------------------------------
 
 try:
     while True:
@@ -48,110 +69,145 @@ try:
         if not ret:
             break
 
+        frame = cv2.flip(frame, 1)
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         results = face_mesh.process(rgb)
 
-        status = "ALERT"
+        h, w, _ = frame.shape
+        status = "WAITING"
+
+        # -------- HEADER --------
+        draw_header(frame)
 
         if results.multi_face_landmarks:
 
             for face_landmarks in results.multi_face_landmarks:
 
-                h, w, _ = frame.shape
-
                 left_eye = []
                 right_eye = []
                 mouth = []
 
-                # LEFT EYE
                 for idx in LEFT_EYE:
-                    x = int(face_landmarks.landmark[idx].x * w)
-                    y = int(face_landmarks.landmark[idx].y * h)
-                    left_eye.append((x,y))
-                    cv2.circle(frame,(x,y),2,(0,255,0),-1)
+                    left_eye.append((
+                        int(face_landmarks.landmark[idx].x * w),
+                        int(face_landmarks.landmark[idx].y * h)
+                    ))
 
-                # RIGHT EYE
                 for idx in RIGHT_EYE:
-                    x = int(face_landmarks.landmark[idx].x * w)
-                    y = int(face_landmarks.landmark[idx].y * h)
-                    right_eye.append((x,y))
-                    cv2.circle(frame,(x,y),2,(0,255,0),-1)
+                    right_eye.append((
+                        int(face_landmarks.landmark[idx].x * w),
+                        int(face_landmarks.landmark[idx].y * h)
+                    ))
 
-                # MOUTH
                 for idx in MOUTH:
-                    x = int(face_landmarks.landmark[idx].x * w)
-                    y = int(face_landmarks.landmark[idx].y * h)
-                    mouth.append((x,y))
-                    cv2.circle(frame,(x,y),2,(255,0,0),-1)
+                    mouth.append((
+                        int(face_landmarks.landmark[idx].x * w),
+                        int(face_landmarks.landmark[idx].y * h)
+                    ))
 
-                # EAR
-                leftEAR = eye_aspect_ratio(left_eye)
-                rightEAR = eye_aspect_ratio(right_eye)
-                ear = (leftEAR + rightEAR) / 2.0
+                ear = (eye_aspect_ratio(left_eye) +
+                       eye_aspect_ratio(right_eye)) / 2.0
 
-                # MAR
                 mar = mouth_aspect_ratio(mouth)
 
-                # ----- BLINK -----
-                if ear < EAR_THRESHOLD:
-                    blink_counter += 1
+                # -------- WAITING --------
+                if not calibrated and not calibrating:
+                    draw_waiting(frame, w, h)
 
-                    if blink_counter >= DROWSY_FRAMES:
-                        status = "DROWSY"
+                # -------- CALIBRATION --------
+                elif calibrating:
 
-                else:
-                    if blink_counter >= CONSEC_FRAMES:
-                        total_blinks += 1
-                    blink_counter = 0
+                    elapsed = time.time() - calibration_start
+                    remaining = max(0, int(CALIB_DURATION - elapsed))
+                    progress = min(elapsed / CALIB_DURATION, 1.0)
 
-                # ----- YAWN -----
-                if mar > YAWN_THRESHOLD:
-                    yawn_counter += 1
+                    ear_values.append(ear)
+                    mar_values.append(mar)
 
-                    if yawn_counter >= YAWN_FRAMES:
-                        total_yawns += 1
-                        status = "DROWSY"
+                    draw_calibration(frame, w, h, remaining, progress)
+
+                    if elapsed >= CALIB_DURATION:
+
+                        EAR_THRESHOLD = np.mean(ear_values) - 0.05
+                        MAR_THRESHOLD = np.mean(mar_values) + 0.10
+
+                        calibrating = False
+                        calibrated = True
+
+                        print("\n=== CALIBRATION COMPLETE ===")
+                        print(f"Average EAR: {np.mean(ear_values):.3f}")
+                        print(f"Average MAR: {np.mean(mar_values):.3f}")
+                        print(f"EAR Threshold: {EAR_THRESHOLD:.3f}")
+                        print(f"MAR Threshold: {MAR_THRESHOLD:.3f}")
+                        print("============================\n")
+
+                # -------- NORMAL MODE --------
+                elif calibrated:
+
+                    status = "ALERT"
+
+                    if ear < EAR_THRESHOLD:
+                        blink_counter += 1
+                        if blink_counter >= DROWSY_FRAMES:
+                            status = "DROWSY"
+                    else:
+                        blink_counter = 0
+
+                    if mar > MAR_THRESHOLD:
+                        yawn_counter += 1
+                        if yawn_counter >= YAWN_FRAMES:
+                            status = "DROWSY"
+                            yawn_counter = 0
+                    else:
                         yawn_counter = 0
-                else:
-                    yawn_counter = 0
 
-                # Display EAR
-                cv2.putText(frame, f"EAR: {ear:.2f}", (30,50),
-                            cv2.FONT_HERSHEY_SIMPLEX, 1, (0,255,0), 2)
+                    draw_status_panel(frame, ear, mar, status)
 
-                # Display MAR
-                cv2.putText(frame, f"MAR: {mar:.2f}", (30,100),
-                            cv2.FONT_HERSHEY_SIMPLEX, 1, (255,0,0), 2)
+        # -------- ALARM --------
+        if calibrated:
+            if status == "DROWSY":
+                if not pygame.mixer.music.get_busy():
+                    pygame.mixer.music.play(-1)
+            else:
+                pygame.mixer.music.stop()
 
-                # Blinks
-                cv2.putText(frame, f"Blinks: {total_blinks}", (30,150),
-                            cv2.FONT_HERSHEY_SIMPLEX, 1, (0,255,0), 2)
-
-                # Yawns
-                cv2.putText(frame, f"Yawns: {total_yawns}", (30,200),
-                            cv2.FONT_HERSHEY_SIMPLEX, 1, (255,0,0), 2)
-
-                # Status
-                color = (0,0,255) if status=="DROWSY" else (0,255,0)
-
-                cv2.putText(frame, f"Status: {status}", (30,250),
-                            cv2.FONT_HERSHEY_SIMPLEX, 1, color, 3)
-
-        # -------- ALARM CONTROL --------
-        if status == "DROWSY":
-            if not pygame.mixer.music.get_busy():
-                pygame.mixer.music.play(-1)  # loop
-        else:
-            pygame.mixer.music.stop()
-        # --------------------------------
-
+        # Show frame
         cv2.imshow("Driver Monitoring System", frame)
 
-        if cv2.waitKey(1) & 0xFF == 27:
+        key = cv2.waitKey(1) & 0xFF
+
+        # -------- KEY CONTROLS --------
+
+        # Start calibration
+        if key == ord('c') and not calibrated:
+            calibrating = True
+            calibration_start = time.time()
+            ear_values.clear()
+            mar_values.clear()
+
+        # Toggle fullscreen
+        if key == ord('f'):
+            fullscreen = not fullscreen
+
+            if fullscreen:
+                cv2.setWindowProperty(
+                    "Driver Monitoring System",
+                    cv2.WND_PROP_FULLSCREEN,
+                    cv2.WINDOW_FULLSCREEN
+                )
+            else:
+                cv2.setWindowProperty(
+                    "Driver Monitoring System",
+                    cv2.WND_PROP_FULLSCREEN,
+                    cv2.WINDOW_NORMAL
+                )
+
+        # Exit
+        if key == 27:
             break
 
 except KeyboardInterrupt:
-    print("Program stopped by user")
+    print("Stopped by user")
 
 finally:
     pygame.mixer.music.stop()
